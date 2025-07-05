@@ -6,27 +6,36 @@ import os
 import joblib
 import mlflow
 import mlflow.sklearn
+import matplotlib.pyplot as plt
+import seaborn as sns
+import logging
 
 from nltk.corpus import stopwords
 from nltk.stem.porter import PorterStemmer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, confusion_matrix
 from sklearn.naive_bayes import MultinomialNB
-from sklearn.metrics import accuracy_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 
-# Download stopwords if not already
+# Setup debug logs
+logging.basicConfig(level=logging.INFO)
+
+# Set custom tracking folder to avoid OneDrive conflicts
+mlflow.set_tracking_uri("file:///C:/mlflow_logs")
+
+# Download NLTK stopwords if needed
 try:
     nltk.data.find('corpora/stopwords')
 except LookupError:
     nltk.download('stopwords')
 
-# Text preprocessing setup
 ps = PorterStemmer()
 all_stopwords = stopwords.words('english')
 if 'not' in all_stopwords:
     all_stopwords.remove('not')
 
-# Function to preprocess raw text
 def preprocess_text(text):
     text = text.lower()
     text = re.sub('[^a-zA-Z]', ' ', text)
@@ -36,15 +45,64 @@ def preprocess_text(text):
     words = [ps.stem(word) for word in words if word not in set(all_stopwords)]
     return ' '.join(words)
 
-# Load dataset and apply preprocessing
 def load_and_preprocess_data():
-    df = pd.read_csv('train.csv', header=None)
+    filepath = 'train.csv'
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"[ERROR] File not found: {os.path.abspath(filepath)}")
+    df = pd.read_csv(filepath, header=None)
     df.columns = ['text', 'label']
     df['processed_text'] = df['text'].apply(preprocess_text)
     return df
 
-# Train model and log everything with MLflow autologging
-def train_model():
+def plot_and_log_confusion_matrix(y_true, y_pred, title):
+    cm = confusion_matrix(y_true, y_pred)
+    plt.figure(figsize=(6, 5))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=["Ham", "Spam"], yticklabels=["Ham", "Spam"])
+    plt.xlabel("Predicted")
+    plt.ylabel("Actual")
+    plt.title(f"Confusion Matrix - {title}")
+
+    img_path = f"conf_matrix_{title.replace(' ', '_')}.png"
+    plt.savefig(img_path)
+    plt.close()
+
+    if os.path.exists(img_path):
+        mlflow.log_artifact(img_path)
+        os.remove(img_path)
+    else:
+        logging.warning(f"Image file missing: {img_path}")
+
+def train_and_log_model(name, model, X_train, y_train, X_test, y_test, tfidf):
+    mlflow.sklearn.autolog(disable=True)
+    with mlflow.start_run(run_name=name):
+        logging.info(f"[INFO] Training model: {name}")
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        acc = accuracy_score(y_test, y_pred)
+
+        mlflow.log_param("model", name)
+        mlflow.log_metric("accuracy", acc)
+
+        # Save and log model + vectorizer
+        model_file = f"{name}_model.pkl"
+        vect_file = f"{name}_vectorizer.pkl"
+
+        joblib.dump(model, model_file)
+        joblib.dump(tfidf, vect_file)
+
+        for file in [model_file, vect_file]:
+            if os.path.exists(file):
+                mlflow.log_artifact(file)
+                os.remove(file)
+            else:
+                logging.warning(f"[WARNING] Missing file for artifact log: {file}")
+
+        # Confusion matrix artifact
+        plot_and_log_confusion_matrix(y_test, y_pred, name)
+
+        print(f"[RESULT] {name} Accuracy: {acc:.4f}\n")
+
+def run_experiments():
     print("[INFO] Loading and preprocessing data...")
     df = load_and_preprocess_data()
 
@@ -54,31 +112,20 @@ def train_model():
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    clf = MultinomialNB()
+    mlflow.set_experiment("Spam Classification Comparison")
 
-    # ✅ Enable autologging
-    mlflow.sklearn.autolog()
+    train_and_log_model("Naive Bayes", MultinomialNB(), X_train, y_train, X_test, y_test, tfidf)
+    train_and_log_model("Logistic Regression", LogisticRegression(max_iter=200), X_train, y_train, X_test, y_test, tfidf)
+    train_and_log_model("Random Forest", RandomForestClassifier(n_estimators=100), X_train, y_train, X_test, y_test, tfidf)
 
-    print("[INFO] Starting MLflow run and training model...")
-    with mlflow.start_run():
-        clf.fit(X_train, y_train)
-        y_pred = clf.predict(X_test)
-        acc = accuracy_score(y_test, y_pred)
+    print("[INFO] All experiments completed.")
 
-        # ✅ Save model and vectorizer manually
-        joblib.dump(clf, 'spam_model.pkl')
-        joblib.dump(tfidf, 'vectorizer.pkl')
+def predict_spam(text, model_file="Naive Bayes_model.pkl", vect_file="Naive Bayes_vectorizer.pkl"):
+    if not os.path.exists(model_file) or not os.path.exists(vect_file):
+        return "Model not trained. Please run the script first."
 
-        print(f"[SUCCESS] Model training complete. Accuracy: {acc:.4f}")
-        return acc
-
-# Use saved model to predict new input text
-def predict_spam(text):
-    if not os.path.exists('spam_model.pkl') or not os.path.exists('vectorizer.pkl'):
-        return "Model not trained. Please run train_model() first."
-
-    model = joblib.load('spam_model.pkl')
-    vectorizer = joblib.load('vectorizer.pkl')
+    model = joblib.load(model_file)
+    vectorizer = joblib.load(vect_file)
 
     processed = preprocess_text(text)
     vectorized = vectorizer.transform([processed]).toarray()
@@ -86,7 +133,5 @@ def predict_spam(text):
 
     return "Spam" if pred[0] == 1 else "Not Spam (Ham)"
 
-# Entry point for execution
 if __name__ == "__main__":
-    accuracy = train_model()
-    print(f"[RESULT] Final Model Accuracy: {accuracy:.4f}")
+    run_experiments()

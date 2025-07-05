@@ -9,6 +9,7 @@ import mlflow.sklearn
 import matplotlib.pyplot as plt
 import seaborn as sns
 import logging
+from sklearn.model_selection import GridSearchCV
 
 from nltk.corpus import stopwords
 from nltk.stem.porter import PorterStemmer
@@ -54,84 +55,18 @@ def load_and_preprocess_data():
     df['processed_text'] = df['text'].apply(preprocess_text)
     return df
 
-def plot_and_log_confusion_matrix(y_true, y_pred, title):
-    cm = confusion_matrix(y_true, y_pred)
-    plt.figure(figsize=(6, 5))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=["Ham", "Spam"], yticklabels=["Ham", "Spam"])
-    plt.xlabel("Predicted")
-    plt.ylabel("Actual")
-    plt.title(f"Confusion Matrix - {title}")
-
-    img_path = f"conf_matrix_{title.replace(' ', '_')}.png"
-    plt.savefig(img_path)
-    plt.close()
-
-    if os.path.exists(img_path):
-        mlflow.log_artifact(img_path)
-        os.remove(img_path)
-    else:
-        logging.warning(f"Image file missing: {img_path}")
-
-def train_and_log_model(name, model, X_train, y_train, X_test, y_test, tfidf):
-    mlflow.sklearn.autolog(disable=True)
-    with mlflow.start_run(run_name=name):
-        logging.info(f"[INFO] Training model: {name}")
-        model.fit(X_train, y_train)
-        y_pred = model.predict(X_test)
-        acc = accuracy_score(y_test, y_pred)
-
-        mlflow.log_param("model", name)
-        mlflow.log_metric("accuracy", acc)
-
-        # Save and log model + vectorizer
-        model_file = f"{name}_model.pkl"
-        vect_file = f"{name}_vectorizer.pkl"
-
-        joblib.dump(model, model_file)
-        joblib.dump(tfidf, vect_file)
-
-        for file in [model_file, vect_file]:
-            if os.path.exists(file):
-                mlflow.log_artifact(file)
-                os.remove(file)
-            else:
-                logging.warning(f"[WARNING] Missing file for artifact log: {file}")
-
-        # Confusion matrix artifact
-        plot_and_log_confusion_matrix(y_test, y_pred, name)
-
-        print(f"[RESULT] {name} Accuracy: {acc:.4f}\n")
-
-def run_experiments():
-    print("[INFO] Loading and preprocessing data...")
+def train_model():
     df = load_and_preprocess_data()
-
     tfidf = TfidfVectorizer(max_features=2500, min_df=5, max_df=0.7)
     X = tfidf.fit_transform(df['processed_text']).toarray()
     y = df['label']
-
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-    mlflow.set_experiment("Spam Classification Comparison")
-
-    train_and_log_model("Naive Bayes", MultinomialNB(), X_train, y_train, X_test, y_test, tfidf)
-    train_and_log_model("Logistic Regression", LogisticRegression(max_iter=200), X_train, y_train, X_test, y_test, tfidf)
-    train_and_log_model("Random Forest", RandomForestClassifier(n_estimators=100), X_train, y_train, X_test, y_test, tfidf)
-
-    print("[INFO] All experiments completed.")
-
-def predict_spam(text, model_file="Naive Bayes_model.pkl", vect_file="Naive Bayes_vectorizer.pkl"):
-    if not os.path.exists(model_file) or not os.path.exists(vect_file):
-        return "Model not trained. Please run the script first."
-
-    model = joblib.load(model_file)
-    vectorizer = joblib.load(vect_file)
-
-    processed = preprocess_text(text)
-    vectorized = vectorizer.transform([processed]).toarray()
-    pred = model.predict(vectorized)
-
-    return "Spam" if pred[0] == 1 else "Not Spam (Ham)"
+    clf = MultinomialNB()
+    clf.fit(X_train, y_train)
+    joblib.dump(clf, 'spam_model.pkl')
+    joblib.dump(tfidf, 'vectorizer.pkl')
+    y_pred = clf.predict(X_test)
+    return accuracy_score(y_test, y_pred)
 
 def get_best_params():
     df = load_and_preprocess_data()
@@ -145,5 +80,12 @@ def get_best_params():
     grid.fit(X_train, y_train)
     return grid.best_params_
 
-if __name__ == "__main__":
-    run_experiments()
+def predict_spam(text):
+    if not os.path.exists('spam_model.pkl') or not os.path.exists('vectorizer.pkl'):
+        return "Model not trained."
+    model = joblib.load('spam_model.pkl')
+    vectorizer = joblib.load('vectorizer.pkl')
+    processed = preprocess_text(text)
+    vectorized = vectorizer.transform([processed]).toarray()
+    pred = model.predict(vectorized)
+    return "Spam" if pred[0] == 1 else "Not Spam (Ham)"

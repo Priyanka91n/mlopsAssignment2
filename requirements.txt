@@ -1,0 +1,11 @@
+requirements = '''
+flask
+joblib
+scikit-learn
+nltk
+'''
+
+with open("requirements.txt", "w") as f:
+    f.write(requirements.strip())
+
+print("requirements.txt created successfully.")

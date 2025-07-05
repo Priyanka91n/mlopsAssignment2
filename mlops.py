@@ -133,5 +133,17 @@ def predict_spam(text, model_file="Naive Bayes_model.pkl", vect_file="Naive Baye
 
     return "Spam" if pred[0] == 1 else "Not Spam (Ham)"
 
+def get_best_params():
+    df = load_and_preprocess_data()
+    tfidf = TfidfVectorizer(max_features=2500, min_df=5, max_df=0.7)
+    X = tfidf.fit_transform(df['processed_text']).toarray()
+    y = df['label']
+    X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2, random_state=42)
+    clf = MultinomialNB()
+    param_grid = {'alpha': [0.1, 0.5, 1.0]}
+    grid = GridSearchCV(clf, param_grid, cv=5)
+    grid.fit(X_train, y_train)
+    return grid.best_params_
+
 if __name__ == "__main__":
     run_experiments()
